@@ -4,6 +4,10 @@ let isValid = require("./auth_users.js").isValid;
 let users = require("./auth_users.js").users;
 const public_users = express.Router();
 
+const axios = require('axios');
+const PORT = process.env.PORT || 5001;
+const BASE_URL = `http://localhost:${PORT}`;
+
 
 public_users.post("/register", (req,res) => {
   const username = req.body.username;
@@ -44,16 +48,31 @@ function getBookByISBN(isbn) {
 }
 
 function getBooksByAuthor(author) {
+  // Use Axios to fetch the canonical book list over HTTP, then filter by author.
   return new Promise((resolve, reject) => {
-    const matchingBooks = Object.keys(books)
-      .filter((key) => books[key].author === author)
-      .map((key) => books[key]);
+    axios
+      .get(`${BASE_URL}/`)
+      .then((response) => {
+        const data = response.data || {};
+        const matchingBooks = Object.keys(data)
+          .filter((key) => data[key].author === author)
+          .map((key) => data[key]);
 
-    if (matchingBooks.length > 0) {
-      resolve(matchingBooks);
-    } else {
-      reject(new Error("No books found for this author"));
-    }
+        if (matchingBooks.length > 0) {
+          resolve(matchingBooks);
+        } else {
+          reject(new Error('No books found for this author'));
+        }
+      })
+      .catch((err) => {
+        if (err.response) {
+          reject(new Error(`Upstream error: ${err.response.status} ${err.response.statusText}`));
+        } else if (err.request) {
+          reject(new Error('Failed to fetch books: no response from data source'));
+        } else {
+          reject(new Error(`Failed to fetch books: ${err.message}`));
+        }
+      });
   });
 }
 
@@ -85,7 +104,8 @@ function getBookReviews(isbn) {
 public_users.get('/', async function (req, res) {
   try {
     const bookList = await getAllBooks();
-    res.send(JSON.stringify(bookList, null, 4));
+    // return JSON with proper content-type
+    res.json(bookList);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -101,8 +121,17 @@ public_users.get('/isbn/:isbn', function (req, res) {
 // Get book details based on author (Promise)
 public_users.get('/author/:author', function (req, res) {
   getBooksByAuthor(req.params.author)
-    .then((matchingBooks) => res.send(matchingBooks))
-    .catch((err) => res.status(404).json({ message: err.message }));
+    .then((matchingBooks) => res.json(matchingBooks))
+    .catch((err) => {
+      const msg = err && err.message ? err.message : 'Unknown error';
+      if (msg.includes('No books found')) {
+        return res.status(404).json({ message: msg });
+      }
+      if (msg.includes('Failed to fetch') || msg.startsWith('Upstream error')) {
+        return res.status(502).json({ message: msg });
+      }
+      return res.status(500).json({ message: msg });
+    });
 });
 
 // Get all books based on title (Async/Await)
